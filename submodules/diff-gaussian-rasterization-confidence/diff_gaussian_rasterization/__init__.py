@@ -20,7 +20,7 @@ try:
 except Exception:  # pragma: no cover - fallback when extension is unavailable
     _C = None
 
-_FORCE_TORCH_RASTERIZER = os.getenv("USE_TORCH_RASTERIZER", "0") == "1"
+_FORCE_TORCH_RASTERIZER = True
 
 def cpu_deep_copy_tuple(input_tuple):
     copied_tensors = [item.cpu().clone() if isinstance(item, torch.Tensor) else item for item in input_tuple]
@@ -165,39 +165,27 @@ def rasterize_gaussians(
     cov3Ds_precomp,
     raster_settings,
 ):
-    if _C is None or _FORCE_TORCH_RASTERIZER:
-        confidence = raster_settings.confidence
-        if confidence is not None:
-            def _scale_grad(grad, scale):
-                if grad is None:
-                    return None
-                while scale.dim() < grad.dim():
-                    scale = scale.unsqueeze(-1)
-                return grad * scale
+    confidence = raster_settings.confidence
+    if confidence is not None:
+        def _scale_grad(grad, scale):
+            if grad is None:
+                return None
+            while scale.dim() < grad.dim():
+                scale = scale.unsqueeze(-1)
+            return grad * scale
 
-            def _register_confidence_hook(tensor, scale):
-                if tensor is not None and isinstance(tensor, torch.Tensor) and tensor.requires_grad:
-                    tensor.register_hook(lambda grad, s=scale: _scale_grad(grad, s))
+        def _register_confidence_hook(tensor, scale):
+            if tensor is not None and isinstance(tensor, torch.Tensor) and tensor.requires_grad:
+                tensor.register_hook(lambda grad, s=scale: _scale_grad(grad, s))
 
-            _register_confidence_hook(means3D, confidence)
-            _register_confidence_hook(sh, confidence)
-            _register_confidence_hook(colors_precomp, confidence)
-            _register_confidence_hook(opacities, confidence)
-            _register_confidence_hook(scales, confidence)
-            _register_confidence_hook(rotations, confidence)
-            _register_confidence_hook(cov3Ds_precomp, confidence)
-        return _rasterize_gaussians_torch(
-            means3D,
-            means2D,
-            sh,
-            colors_precomp,
-            opacities,
-            scales,
-            rotations,
-            cov3Ds_precomp,
-            raster_settings,
-        )
-    return _RasterizeGaussians.apply(
+        _register_confidence_hook(means3D, confidence)
+        _register_confidence_hook(sh, confidence)
+        _register_confidence_hook(colors_precomp, confidence)
+        _register_confidence_hook(opacities, confidence)
+        _register_confidence_hook(scales, confidence)
+        _register_confidence_hook(rotations, confidence)
+        _register_confidence_hook(cov3Ds_precomp, confidence)
+    return _rasterize_gaussians_torch(
         means3D,
         means2D,
         sh,
