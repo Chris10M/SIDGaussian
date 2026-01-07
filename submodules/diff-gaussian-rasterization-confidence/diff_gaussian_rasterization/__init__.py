@@ -26,7 +26,7 @@ def cpu_deep_copy_tuple(input_tuple):
     copied_tensors = [item.cpu().clone() if isinstance(item, torch.Tensor) else item for item in input_tuple]
     return tuple(copied_tensors)
 
-def _project_points(points, viewmatrix, projmatrix, image_width, image_height):
+def _project_points(points, viewmatrix, projmatrix, image_width, image_height, means2D=None):
     ones = torch.ones((points.shape[0], 1), device=points.device, dtype=points.dtype)
     points_hom = torch.cat([points, ones], dim=1)
     cam_hom = points_hom @ viewmatrix
@@ -35,7 +35,10 @@ def _project_points(points, viewmatrix, projmatrix, image_width, image_height):
     ndc = clip_hom[:, :3] / clip_w
     x = (ndc[:, 0] + 1.0) * 0.5 * image_width
     y = (1.0 - ndc[:, 1]) * 0.5 * image_height
-    return cam_hom[:, :3], torch.stack([x, y], dim=1)
+    screen_xy = torch.stack([x, y], dim=1)
+    if means2D is not None and means2D.numel() != 0:
+        screen_xy = screen_xy + means2D[:, :2]
+    return cam_hom[:, :3], screen_xy
 
 
 def _colors_from_sh(sh, sh_degree, means3D, campos):
@@ -74,7 +77,12 @@ def _rasterize_gaussians_torch(
     fy = 0.5 * height / raster_settings.tanfovy
 
     cam_coords, screen_xy = _project_points(
-        means3D, raster_settings.viewmatrix, raster_settings.projmatrix, width, height
+        means3D,
+        raster_settings.viewmatrix,
+        raster_settings.projmatrix,
+        width,
+        height,
+        means2D=means2D,
     )
     cam_z = cam_coords[:, 2]
 
@@ -158,6 +166,26 @@ def rasterize_gaussians(
     raster_settings,
 ):
     if _C is None or _FORCE_TORCH_RASTERIZER:
+        confidence = raster_settings.confidence
+        if confidence is not None:
+            def _scale_grad(grad, scale):
+                if grad is None:
+                    return None
+                while scale.dim() < grad.dim():
+                    scale = scale.unsqueeze(-1)
+                return grad * scale
+
+            def _register_confidence_hook(tensor, scale):
+                if tensor is not None and isinstance(tensor, torch.Tensor) and tensor.requires_grad:
+                    tensor.register_hook(lambda grad, s=scale: _scale_grad(grad, s))
+
+            _register_confidence_hook(means3D, confidence)
+            _register_confidence_hook(sh, confidence)
+            _register_confidence_hook(colors_precomp, confidence)
+            _register_confidence_hook(opacities, confidence)
+            _register_confidence_hook(scales, confidence)
+            _register_confidence_hook(rotations, confidence)
+            _register_confidence_hook(cov3Ds_precomp, confidence)
         return _rasterize_gaussians_torch(
             means3D,
             means2D,

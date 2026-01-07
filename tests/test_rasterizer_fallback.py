@@ -84,6 +84,44 @@ def test_torch_rasterizer_outputs_shapes():
     assert radii.shape == (means3d.shape[0],)
     assert depth.shape == (1, settings.image_height, settings.image_width)
     assert alpha.shape == (1, settings.image_height, settings.image_width)
+    color.sum().backward()
+    assert means2d.grad is not None
+
+
+def test_confidence_scales_grads_in_torch_path():
+    if torch is None or dgr is None:
+        pytest.skip("torch is not installed.")
+
+    def _run_with_confidence(confidence_value):
+        device = torch.device("cpu")
+        means3d, means2d, colors, opacities, scales, rotations, bg = _build_inputs(device)
+        means3d = means3d.clone().requires_grad_(True)
+        colors = colors.clone().requires_grad_(True)
+        opacities = opacities.clone().requires_grad_(True)
+        scales = scales.clone().requires_grad_(True)
+        rotations = rotations.clone().requires_grad_(True)
+        settings = _build_settings(device)._replace(
+            bg=bg,
+            confidence=torch.full((means3d.shape[0], 1), confidence_value, device=device),
+        )
+        rasterizer = dgr.GaussianRasterizer(settings)
+        dgr._FORCE_TORCH_RASTERIZER = True
+        color, _, _, _ = rasterizer(
+            means3D=means3d,
+            means2D=means2d,
+            colors_precomp=colors,
+            opacities=opacities,
+            scales=scales,
+            rotations=rotations,
+        )
+        color.sum().backward()
+        return means3d.grad, colors.grad, opacities.grad, scales.grad, rotations.grad
+
+    grads_full = _run_with_confidence(1.0)
+    grads_half = _run_with_confidence(0.5)
+
+    for grad_half, grad_full in zip(grads_half, grads_full):
+        assert torch.allclose(grad_half, grad_full * 0.5, atol=1e-5, rtol=1e-5)
 
 
 @pytest.mark.skipif(
